@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Biomedical Knowledge Graph</title>
+  <link rel="stylesheet" href="https://unpkg.com/vis-network/styles/vis-network.min.css">
+  <style>
+    :root {
+      --bg: #f6f8f7;
+      --text: #1e2a24;
+      --card: #ffffff;
+      --accent: #2f7d62;
+      --border: #d9e3dd;
+    }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .toolbar input, .toolbar button {
+      padding: 6px 8px;
+      font-size: 14px;
+    }
+    .toolbar select {
+      padding: 6px 8px;
+      font-size: 14px;
+    }
+    .toolbar button {
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+    .toolbar button.secondary {
+      background: #fff;
+      color: var(--accent);
+    }
+    .meta {
+      font-size: 13px;
+      color: #46564e;
+    }
+    #network {
+      width: 100%;
+      height: calc(100vh - 58px);
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <label>Top edges:
+      <input id="topEdges" type="number" min="50" step="50" value="800">
+    </label>
+    <label>Min edge papers:
+      <input id="minPaper" type="number" min="0" step="1" value="0">
+    </label>
+    <label>Relation contains:
+      <input id="relationQuery" type="text" placeholder="activation">
+    </label>
+    <label>Focus node:
+      <input id="nodeQuery" type="text" list="nodeHints" placeholder="entity id or name">
+      <datalist id="nodeHints"></datalist>
+    </label>
+    <label>Focus mode:
+      <select id="focusMode">
+        <option value="all">All edges</option>
+        <option value="neighbor" selected>1-hop around focus</option>
+      </select>
+    </label>
+    <button id="reload">Render</button>
+    <button id="reset" class="secondary" type="button">Reset</button>
+    <span id="meta" class="meta">Loading graph.json...</span>
+  </div>
+  <div id="network"></div>
+
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <script>
+    const byCount = (a, b) => (b.chunk_count - a.chunk_count) || (b.paper_count - a.paper_count);
+    let ALL_NODES = [];
+    let ALL_EDGES = [];
+    let NETWORK = null;
+
+    function asInt(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    function pickFocusNode(query) {
+      const needle = String(query || "").trim().toLowerCase();
+      if (!needle) return "";
+
+      for (const n of ALL_NODES) {
+        if (String(n.id).toLowerCase() === needle) return n.id;
+      }
+      for (const n of ALL_NODES) {
+        if (String(n.label).toLowerCase() === needle) return n.id;
+      }
+      for (const n of ALL_NODES) {
+        if (String(n.id).toLowerCase().includes(needle) || String(n.label).toLowerCase().includes(needle)) {
+          return n.id;
+        }
+      }
+      return "";
+    }
+
+    function buildBaseGraph(rows) {
+      const nodeMeta = new Map();
+      const edgeMeta = new Map();
+
+      for (const row of rows) {
+        const entityId = String(row.entity_id || "").trim();
+        if (!entityId) continue;
+        const stats = row.stats || {};
+        nodeMeta.set(entityId, {
+          id: entityId,
+          label: row.name ? String(row.name) : entityId,
+          paper_count: asInt(stats.paper_count),
+          chunk_count: asInt(stats.chunk_count || stats.chunck_count)
+        });
+
+        const relations = Array.isArray(row.relations) ? row.relations : [];
+        for (const rel of relations) {
+          const from = String(rel["subjective entity_id"] || "").trim();
+          const to = String(rel["objective entity_id"] || "").trim();
+          const relName = String(rel.relation || "").trim();
+          if (!from || !to || !relName) continue;
+
+          if (!nodeMeta.has(from)) nodeMeta.set(from, { id: from, label: from, paper_count: 0, chunk_count: 0 });
+          if (!nodeMeta.has(to)) nodeMeta.set(to, { id: to, label: to, paper_count: 0, chunk_count: 0 });
+
+          const s = rel.stats || {};
+          const key = `${from}|||${to}|||${relName}`;
+          const curr = edgeMeta.get(key) || { from, to, label: relName, paper_count: 0, chunk_count: 0 };
+          curr.paper_count += asInt(s.paper_count);
+          curr.chunk_count += asInt(s.chunk_count || s.chunck_count);
+          edgeMeta.set(key, curr);
+        }
+      }
+
+      const nodes = [...nodeMeta.values()];
+      const edges = [...edgeMeta.values()];
+      return { nodes, edges };
+    }
+
+    function applyFilters() {
+      const topEdges = Math.max(50, Number(document.getElementById("topEdges").value) || 800);
+      const minPaper = Math.max(0, Number(document.getElementById("minPaper").value) || 0);
+      const relationNeedle = String(document.getElementById("relationQuery").value || "").trim().toLowerCase();
+      const focusNeedle = String(document.getElementById("nodeQuery").value || "").trim();
+      const focusMode = document.getElementById("focusMode").value;
+
+      let edgesFiltered = ALL_EDGES.filter(e => e.paper_count >= minPaper);
+      if (relationNeedle) {
+        edgesFiltered = edgesFiltered.filter(e => String(e.label).toLowerCase().includes(relationNeedle));
+      }
+      edgesFiltered = edgesFiltered.sort(byCount).slice(0, topEdges);
+
+      const chosenFocus = pickFocusNode(focusNeedle);
+      if (chosenFocus && focusMode === "neighbor") {
+        edgesFiltered = edgesFiltered.filter(e => e.from === chosenFocus || e.to === chosenFocus);
+      }
+
+      const keptNodes = new Set();
+      for (const e of edgesFiltered) {
+        keptNodes.add(e.from);
+        keptNodes.add(e.to);
+      }
+      if (chosenFocus) keptNodes.add(chosenFocus);
+
+      const nodes = ALL_NODES
+        .filter(n => keptNodes.has(n.id))
+        .map(n => ({
+          id: n.id,
+          label: n.label,
+          title: `${n.label} (${n.id}) | papers: ${n.paper_count} | chunks: ${n.chunk_count}`,
+          value: Math.max(1, n.paper_count),
+          color: n.id === chosenFocus ? "#c95f3b" : "#4f8c77"
+        }));
+
+      const edges = edgesFiltered.map(e => ({
+        from: e.from,
+        to: e.to,
+        label: "",
+        arrows: "to",
+        title: `${e.label} | papers: ${e.paper_count} | chunks: ${e.chunk_count}`,
+        width: 1 + Math.log1p(Math.max(1, e.paper_count))
+      }));
+
+      return { nodes, edges, topEdges, minPaper, relationNeedle, chosenFocus };
+    }
+
+    function renderFiltered() {
+      const container = document.getElementById("network");
+      const meta = document.getElementById("meta");
+      const { nodes, edges, topEdges, minPaper, relationNeedle, chosenFocus } = applyFilters();
+
+      const data = {
+        nodes: new vis.DataSet(nodes),
+        edges: new vis.DataSet(edges)
+      };
+      const options = {
+        nodes: {
+          shape: "dot",
+          scaling: { min: 6, max: 42 },
+          font: { size: 12 }
+        },
+        edges: {
+          smooth: true,
+          color: { color: "#8bb8a6", highlight: "#2f7d62" },
+          arrows: { to: { enabled: true, scaleFactor: 0.5 } }
+        },
+        physics: {
+          solver: "forceAtlas2Based",
+          forceAtlas2Based: {
+            gravitationalConstant: -50,
+            springLength: 110,
+            springConstant: 0.06,
+            avoidOverlap: 0.2
+          },
+          stabilization: { iterations: 120 }
+        },
+        interaction: { hover: true, navigationButtons: true }
+      };
+
+      if (NETWORK) {
+        NETWORK.setData(data);
+      } else {
+        NETWORK = new vis.Network(container, data, options);
+      }
+
+      const relationPart = relationNeedle ? `, relation contains "${relationNeedle}"` : "";
+      const focusPart = chosenFocus ? `, focus: ${chosenFocus}` : "";
+      meta.textContent = `Rendered ${nodes.length} nodes, ${edges.length} edges (top ${topEdges}, min papers ${minPaper}${relationPart}${focusPart}).`;
+    }
+
+    async function initialize() {
+      const res = await fetch("./graph.json", { cache: "no-store" });
+      if (!res.ok) throw new Error(`Cannot load graph.json (${res.status})`);
+      const rows = await res.json();
+      const base = buildBaseGraph(rows);
+      ALL_NODES = base.nodes;
+      ALL_EDGES = base.edges;
+
+      const hints = document.getElementById("nodeHints");
+      const frag = document.createDocumentFragment();
+      for (const n of ALL_NODES.slice(0, 2000)) {
+        const opt = document.createElement("option");
+        opt.value = n.id;
+        frag.appendChild(opt);
+      }
+      hints.appendChild(frag);
+
+      renderFiltered();
+    }
+
+    document.getElementById("reload").addEventListener("click", () => {
+      try {
+        renderFiltered();
+      } catch (err) {
+        document.getElementById("meta").textContent = `Error: ${err.message}`;
+      }
+    });
+
+    document.getElementById("reset").addEventListener("click", () => {
+      document.getElementById("topEdges").value = "800";
+      document.getElementById("minPaper").value = "0";
+      document.getElementById("relationQuery").value = "";
+      document.getElementById("nodeQuery").value = "";
+      document.getElementById("focusMode").value = "neighbor";
+      try {
+        renderFiltered();
+      } catch (err) {
+        document.getElementById("meta").textContent = `Error: ${err.message}`;
+      }
+    });
+
+    initialize().catch(err => {
+      document.getElementById("meta").textContent = `Error: ${err.message}`;
+    });
+  </script>
+</body>
+</html>
