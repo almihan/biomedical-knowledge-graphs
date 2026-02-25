@@ -7,288 +7,363 @@
   <link rel="stylesheet" href="https://unpkg.com/vis-network/styles/vis-network.min.css">
   <style>
     :root {
-      --bg: #f6f8f7;
-      --text: #1e2a24;
+      --bg: #f5f7f8;
       --card: #ffffff;
-      --accent: #2f7d62;
-      --border: #d9e3dd;
+      --border: #dddddd;
+      --text: #111111;
+      --muted: #666666;
+      --blue: #1677ff;
     }
     body {
       margin: 0;
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
       background: var(--bg);
       color: var(--text);
+      font-family: Helvetica, Arial, sans-serif;
     }
-    .toolbar {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
-      padding: 12px;
-      border-bottom: 1px solid var(--border);
+    .bar {
+      padding: 10px 12px;
       background: var(--card);
+      border-bottom: 1px solid var(--border);
       position: sticky;
       top: 0;
       z-index: 10;
     }
-    .toolbar input, .toolbar button {
-      padding: 6px 8px;
-      font-size: 14px;
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
     }
-    .toolbar select {
-      padding: 6px 8px;
-      font-size: 14px;
+    label {
+      font-size: 36px;
+      transform: scale(0.36);
+      transform-origin: left center;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
     }
-    .toolbar button {
-      border: 1px solid var(--accent);
-      background: var(--accent);
+    input {
+      padding: 6px 8px;
+      font-size: 13px;
+      border: 1px solid #d0d0d0;
+      border-radius: 6px;
+      min-width: 120px;
+    }
+    input[type="number"] {
+      width: 120px;
+    }
+    input[type="text"] {
+      width: 260px;
+    }
+    button {
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--blue);
+      background: var(--blue);
       color: #fff;
+      font-size: 15px;
       cursor: pointer;
     }
-    .toolbar button.secondary {
-      background: #fff;
-      color: var(--accent);
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
     }
-    .meta {
-      font-size: 13px;
-      color: #46564e;
+    .count {
+      font-size: 12px;
+      color: #222;
+      font-weight: 600;
     }
     #network {
       width: 100%;
-      height: calc(100vh - 58px);
+      height: calc(100vh - 64px);
       background: #fff;
+    }
+    @media (max-width: 900px) {
+      #network {
+        height: calc(100vh - 110px);
+      }
+      input[type="text"] {
+        width: 200px;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="toolbar">
-    <label>Top edges:
-      <input id="topEdges" type="number" min="50" step="50" value="800">
-    </label>
-    <label>Min edge papers:
-      <input id="minPaper" type="number" min="0" step="1" value="0">
-    </label>
-    <label>Relation contains:
-      <input id="relationQuery" type="text" placeholder="activation">
-    </label>
-    <label>Focus node:
-      <input id="nodeQuery" type="text" list="nodeHints" placeholder="entity id or name">
-      <datalist id="nodeHints"></datalist>
-    </label>
-    <label>Focus mode:
-      <select id="focusMode">
-        <option value="all">All edges</option>
-        <option value="neighbor" selected>1-hop around focus</option>
-      </select>
-    </label>
-    <button id="reload">Render</button>
-    <button id="reset" class="secondary" type="button">Reset</button>
-    <span id="meta" class="meta">Loading graph.json...</span>
+  <div class="bar">
+    <div class="row">
+      <label>Top Nodes <input id="topNodes" type="number" min="0" value="0"></label>
+      <label>Top Relations <input id="topRelations" type="number" min="0" value="0"></label>
+      <label>Select Node
+        <input id="selectedNode" type="text" list="node-list" placeholder="entity_id or name contains">
+        <datalist id="node-list"></datalist>
+      </label>
+      <button id="applyBtn" type="button">Apply</button>
+      <span class="hint">Set 0 for full top list.</span>
+      <span id="meta" class="count">Loading graph.json...</span>
+    </div>
   </div>
   <div id="network"></div>
 
   <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
   <script>
-    const byCount = (a, b) => (b.chunk_count - a.chunk_count) || (b.paper_count - a.paper_count);
-    let ALL_NODES = [];
-    let ALL_EDGES = [];
-    let NETWORK = null;
+    const bySupport = (a, b) => (b.chunk_count - a.chunk_count) || (b.paper_count - a.paper_count);
+
+    let BASE_NODE_MAP = new Map();
+    let BASE_EDGES = [];
+    let TOTAL_NODES = 0;
+    let TOTAL_EDGES = 0;
+    let NET = null;
 
     function asInt(v) {
       const n = Number(v);
       return Number.isFinite(n) ? n : 0;
     }
 
-    function pickFocusNode(query) {
-      const needle = String(query || "").trim().toLowerCase();
-      if (!needle) return "";
+    function relationPolarity(relName) {
+      const rel = String(relName || "").toLowerCase().trim();
+      const pos = ["activation", "activate", "upregulate", "increase", "promote", "stimulate", "enhance", "secrete", "secreted", "proliferation", "express", "induce", "support"];
+      const neg = ["inhibit", "inhibition", "suppress", "suppression", "decrease", "downregulate", "reduce", "repress", "block", "attenuate", "impair"];
+      for (const t of pos) if (rel.includes(t)) return "+";
+      for (const t of neg) if (rel.includes(t)) return "-";
+      return "-";
+    }
 
-      for (const n of ALL_NODES) {
-        if (String(n.id).toLowerCase() === needle) return n.id;
+    function buildBase(rows) {
+      const nodeMap = new Map();
+      const edgeMap = new Map();
+
+      for (const row of rows) {
+        const entityId = String(row.entity_id || "").trim();
+        if (!entityId) continue;
+        const name = String(row.name || "").trim() || entityId;
+        const stats = row.stats || {};
+        nodeMap.set(entityId, {
+          id: entityId,
+          name,
+          paper_count: asInt(stats.paper_count),
+          chunk_count: asInt(stats.chunk_count || stats.chunck_count)
+        });
+
+        const rels = Array.isArray(row.relations) ? row.relations : [];
+        for (const rel of rels) {
+          const from = String(rel["subjective entity_id"] || "").trim();
+          const to = String(rel["objective entity_id"] || "").trim();
+          const relation = String(rel.relation || "").trim();
+          if (!from || !to || !relation) continue;
+
+          if (!nodeMap.has(from)) nodeMap.set(from, { id: from, name: from, paper_count: 0, chunk_count: 0 });
+          if (!nodeMap.has(to)) nodeMap.set(to, { id: to, name: to, paper_count: 0, chunk_count: 0 });
+
+          const rs = rel.stats || {};
+          const key = `${from}|||${to}|||${relation}`;
+          const curr = edgeMap.get(key) || { from, to, relation, paper_count: 0, chunk_count: 0 };
+          curr.paper_count += asInt(rs.paper_count);
+          curr.chunk_count += asInt(rs.chunk_count || rs.chunck_count);
+          edgeMap.set(key, curr);
+        }
       }
-      for (const n of ALL_NODES) {
-        if (String(n.label).toLowerCase() === needle) return n.id;
-      }
-      for (const n of ALL_NODES) {
-        if (String(n.id).toLowerCase().includes(needle) || String(n.label).toLowerCase().includes(needle)) {
+
+      return { nodeMap, edges: [...edgeMap.values()] };
+    }
+
+    function resolveSelectedNode(needle, nodes) {
+      const q = String(needle || "").trim().toLowerCase();
+      if (!q) return "";
+
+      if (nodes.has(q)) return q;
+
+      const list = [...nodes.values()];
+      for (const n of list) if (String(n.id).toLowerCase() === q) return n.id;
+      for (const n of list) if (String(n.name).toLowerCase() === q) return n.id;
+      for (const n of list) {
+        if (String(n.id).toLowerCase().includes(q) || String(n.name).toLowerCase().includes(q)) {
           return n.id;
         }
       }
       return "";
     }
 
-    function buildBaseGraph(rows) {
-      const nodeMeta = new Map();
-      const edgeMeta = new Map();
+    function computeView(topNodes, topRelations, selectedNodeRaw) {
+      const selectedMode = String(selectedNodeRaw || "").trim() !== "";
+      const fullGraphMode = topNodes === 0 && topRelations === 0 && !selectedMode;
 
-      for (const row of rows) {
-        const entityId = String(row.entity_id || "").trim();
-        if (!entityId) continue;
-        const stats = row.stats || {};
-        nodeMeta.set(entityId, {
-          id: entityId,
-          label: row.name ? String(row.name) : entityId,
-          paper_count: asInt(stats.paper_count),
-          chunk_count: asInt(stats.chunk_count || stats.chunck_count)
-        });
+      let nodes = new Map(BASE_NODE_MAP);
+      let filteredEdges = BASE_EDGES.filter(e => nodes.has(e.from) && nodes.has(e.to));
 
-        const relations = Array.isArray(row.relations) ? row.relations : [];
-        for (const rel of relations) {
-          const from = String(rel["subjective entity_id"] || "").trim();
-          const to = String(rel["objective entity_id"] || "").trim();
-          const relName = String(rel.relation || "").trim();
-          if (!from || !to || !relName) continue;
+      if (!selectedMode && topNodes > 0 && nodes.size > topNodes) {
+        const rankedNodes = [...nodes.entries()].sort((a, b) => bySupport(a[1], b[1])).slice(0, topNodes);
+        nodes = new Map(rankedNodes);
+        filteredEdges = filteredEdges.filter(e => nodes.has(e.from) && nodes.has(e.to));
+      }
 
-          if (!nodeMeta.has(from)) nodeMeta.set(from, { id: from, label: from, paper_count: 0, chunk_count: 0 });
-          if (!nodeMeta.has(to)) nodeMeta.set(to, { id: to, label: to, paper_count: 0, chunk_count: 0 });
+      if (selectedMode) {
+        const chosen = resolveSelectedNode(selectedNodeRaw, nodes);
+        if (chosen) {
+          filteredEdges = filteredEdges.filter(e => e.from === chosen || e.to === chosen);
+          const connected = new Set([chosen]);
+          for (const e of filteredEdges) {
+            connected.add(e.from);
+            connected.add(e.to);
+          }
+          nodes = new Map([...nodes.entries()].filter(([k]) => connected.has(k)));
 
-          const s = rel.stats || {};
-          const key = `${from}|||${to}|||${relName}`;
-          const curr = edgeMeta.get(key) || { from, to, label: relName, paper_count: 0, chunk_count: 0 };
-          curr.paper_count += asInt(s.paper_count);
-          curr.chunk_count += asInt(s.chunk_count || s.chunck_count);
-          edgeMeta.set(key, curr);
+          if (topNodes > 0 && nodes.size > topNodes) {
+            const rankedLocal = [...nodes.entries()].sort((a, b) => bySupport(a[1], b[1])).slice(0, topNodes);
+            const keep = new Set(rankedLocal.map(([id]) => id));
+            keep.add(chosen);
+            nodes = new Map([...nodes.entries()].filter(([k]) => keep.has(k)));
+            filteredEdges = filteredEdges.filter(e => nodes.has(e.from) && nodes.has(e.to));
+          }
         }
       }
 
-      const nodes = [...nodeMeta.values()];
-      const edges = [...edgeMeta.values()];
-      return { nodes, edges };
-    }
-
-    function applyFilters() {
-      const topEdges = Math.max(50, Number(document.getElementById("topEdges").value) || 800);
-      const minPaper = Math.max(0, Number(document.getElementById("minPaper").value) || 0);
-      const relationNeedle = String(document.getElementById("relationQuery").value || "").trim().toLowerCase();
-      const focusNeedle = String(document.getElementById("nodeQuery").value || "").trim();
-      const focusMode = document.getElementById("focusMode").value;
-
-      let edgesFiltered = ALL_EDGES.filter(e => e.paper_count >= minPaper);
-      if (relationNeedle) {
-        edgesFiltered = edgesFiltered.filter(e => String(e.label).toLowerCase().includes(relationNeedle));
-      }
-      edgesFiltered = edgesFiltered.sort(byCount).slice(0, topEdges);
-
-      const chosenFocus = pickFocusNode(focusNeedle);
-      if (chosenFocus && focusMode === "neighbor") {
-        edgesFiltered = edgesFiltered.filter(e => e.from === chosenFocus || e.to === chosenFocus);
+      if (topRelations > 0 && filteredEdges.length > topRelations) {
+        const rankedEdges = [...filteredEdges].sort(bySupport).slice(0, topRelations);
+        filteredEdges = rankedEdges;
+        const connected = new Set();
+        for (const e of rankedEdges) {
+          connected.add(e.from);
+          connected.add(e.to);
+        }
+        nodes = new Map([...nodes.entries()].filter(([k]) => connected.has(k)));
       }
 
-      const keptNodes = new Set();
-      for (const e of edgesFiltered) {
-        keptNodes.add(e.from);
-        keptNodes.add(e.to);
-      }
-      if (chosenFocus) keptNodes.add(chosenFocus);
+      const nodePaperValues = [...nodes.values()].map(n => Math.max(0, n.paper_count));
+      const minPaper = nodePaperValues.length ? Math.min(...nodePaperValues) : 1;
+      const maxPaper = nodePaperValues.length ? Math.max(...nodePaperValues) : 1;
 
-      const nodes = ALL_NODES
-        .filter(n => keptNodes.has(n.id))
-        .map(n => ({
+      const visNodes = [...nodes.values()].map(n => {
+        let size = 18;
+        if (maxPaper > minPaper) {
+          const frac = (Math.log1p(Math.max(1, n.paper_count)) - Math.log1p(Math.max(1, minPaper))) /
+            (Math.log1p(Math.max(1, maxPaper)) - Math.log1p(Math.max(1, minPaper)));
+          const outMin = fullGraphMode ? 5 : 12;
+          const outMax = fullGraphMode ? 14 : 58;
+          size = outMin + frac * (outMax - outMin);
+        }
+
+        return {
           id: n.id,
-          label: n.label,
-          title: `${n.label} (${n.id}) | papers: ${n.paper_count} | chunks: ${n.chunk_count}`,
-          value: Math.max(1, n.paper_count),
-          color: n.id === chosenFocus ? "#c95f3b" : "#4f8c77"
-        }));
+          label: fullGraphMode ? "" : `${n.name} (${n.id})`,
+          size,
+          title: `entity_id: ${n.id} | name: ${n.name} | c: ${n.chunk_count} | p: ${n.paper_count}`,
+          color: { background: "#458B73", border: "#458B73", highlight: { background: "#458B73", border: "#2D5E4E" } }
+        };
+      });
 
-      const edges = edgesFiltered.map(e => ({
-        from: e.from,
-        to: e.to,
-        label: "",
-        arrows: "to",
-        title: `${e.label} | papers: ${e.paper_count} | chunks: ${e.chunk_count}`,
-        width: 1 + Math.log1p(Math.max(1, e.paper_count))
-      }));
+      const visEdges = filteredEdges.map(e => {
+        const sign = relationPolarity(e.relation);
+        return {
+          from: e.from,
+          to: e.to,
+          label: fullGraphMode ? "" : sign,
+          title: `relation: ${e.relation} | sign: ${sign} | c: ${e.chunk_count} | p: ${e.paper_count} | ${e.from} -> ${e.to}`,
+          width: fullGraphMode ? 0.8 : 2.0,
+          length: 130,
+          color: { color: "#458B73", highlight: "#458B73", hover: "#458B73" },
+          font: { color: sign === "+" ? "#2EAD4A" : "#E53935" },
+          arrows: "to"
+        };
+      });
 
-      return { nodes, edges, topEdges, minPaper, relationNeedle, chosenFocus };
+      return { fullGraphMode, nodes: visNodes, edges: visEdges };
     }
 
-    function renderFiltered() {
-      const container = document.getElementById("network");
-      const meta = document.getElementById("meta");
-      const { nodes, edges, topEdges, minPaper, relationNeedle, chosenFocus } = applyFilters();
+    function readInputs() {
+      const topNodes = Math.max(0, Number(document.getElementById("topNodes").value) || 0);
+      const topRelations = Math.max(0, Number(document.getElementById("topRelations").value) || 0);
+      const selectedNode = document.getElementById("selectedNode").value || "";
+      return { topNodes, topRelations, selectedNode };
+    }
 
-      const data = {
-        nodes: new vis.DataSet(nodes),
-        edges: new vis.DataSet(edges)
-      };
+    function renderFromInputs() {
+      const { topNodes, topRelations, selectedNode } = readInputs();
+
+      const view = computeView(topNodes, topRelations, selectedNode);
+
       const options = {
         nodes: {
           shape: "dot",
-          scaling: { min: 6, max: 42 },
-          font: { size: 12 }
+          font: { size: view.fullGraphMode ? 0 : 14, face: "Helvetica" },
+          borderWidth: 1,
+          borderWidthSelected: 2
         },
         edges: {
-          smooth: true,
-          color: { color: "#8bb8a6", highlight: "#2f7d62" },
-          arrows: { to: { enabled: true, scaleFactor: 0.5 } }
+          smooth: { type: "dynamic" },
+          font: { size: view.fullGraphMode ? 0 : 36, align: "middle", strokeWidth: 4, strokeColor: "#FFFFFF" },
+          color: { inherit: false, color: "#1a1a1a", highlight: "#000000" },
+          arrows: { to: { enabled: true, scaleFactor: 0.35 } },
+          selectionWidth: 0,
+          hoverWidth: 0
         },
-        physics: {
+        interaction: {
+          hover: true,
+          tooltipDelay: 150,
+          navigationButtons: true
+        },
+        physics: view.fullGraphMode ? { enabled: false } : {
+          enabled: true,
           solver: "forceAtlas2Based",
           forceAtlas2Based: {
-            gravitationalConstant: -50,
-            springLength: 110,
-            springConstant: 0.06,
-            avoidOverlap: 0.2
+            gravitationalConstant: -52,
+            centralGravity: 0.012,
+            springLength: 170,
+            springConstant: 0.05,
+            damping: 0.45,
+            avoidOverlap: 0.25
           },
-          stabilization: { iterations: 120 }
-        },
-        interaction: { hover: true, navigationButtons: true }
+          maxVelocity: 2.8,
+          minVelocity: 0.001,
+          timestep: 0.14,
+          adaptiveTimestep: true,
+          stabilization: { enabled: false }
+        }
       };
 
-      if (NETWORK) {
-        NETWORK.setData(data);
+      const data = { nodes: new vis.DataSet(view.nodes), edges: new vis.DataSet(view.edges) };
+      const container = document.getElementById("network");
+      if (!NET) {
+        NET = new vis.Network(container, data, options);
       } else {
-        NETWORK = new vis.Network(container, data, options);
+        NET.setData(data);
+        NET.setOptions(options);
       }
 
-      const relationPart = relationNeedle ? `, relation contains "${relationNeedle}"` : "";
-      const focusPart = chosenFocus ? `, focus: ${chosenFocus}` : "";
-      meta.textContent = `Rendered ${nodes.length} nodes, ${edges.length} edges (top ${topEdges}, min papers ${minPaper}${relationPart}${focusPart}).`;
+      document.getElementById("meta").textContent = `Nodes: ${TOTAL_NODES} | Edges: ${TOTAL_EDGES}`;
     }
 
-    async function initialize() {
+    async function init() {
       const res = await fetch("./graph.json", { cache: "no-store" });
       if (!res.ok) throw new Error(`Cannot load graph.json (${res.status})`);
       const rows = await res.json();
-      const base = buildBaseGraph(rows);
-      ALL_NODES = base.nodes;
-      ALL_EDGES = base.edges;
+      const base = buildBase(rows);
+      BASE_NODE_MAP = base.nodeMap;
+      BASE_EDGES = base.edges;
+      TOTAL_NODES = BASE_NODE_MAP.size;
+      TOTAL_EDGES = BASE_EDGES.length;
 
-      const hints = document.getElementById("nodeHints");
+      const list = document.getElementById("node-list");
       const frag = document.createDocumentFragment();
-      for (const n of ALL_NODES.slice(0, 2000)) {
-        const opt = document.createElement("option");
-        opt.value = n.id;
-        frag.appendChild(opt);
+      for (const n of [...BASE_NODE_MAP.values()].slice(0, 2000)) {
+        const a = document.createElement("option");
+        a.value = n.id;
+        frag.appendChild(a);
       }
-      hints.appendChild(frag);
+      list.appendChild(frag);
 
-      renderFiltered();
+      renderFromInputs();
     }
 
-    document.getElementById("reload").addEventListener("click", () => {
+    document.getElementById("applyBtn").addEventListener("click", () => {
       try {
-        renderFiltered();
+        renderFromInputs();
       } catch (err) {
         document.getElementById("meta").textContent = `Error: ${err.message}`;
       }
     });
 
-    document.getElementById("reset").addEventListener("click", () => {
-      document.getElementById("topEdges").value = "800";
-      document.getElementById("minPaper").value = "0";
-      document.getElementById("relationQuery").value = "";
-      document.getElementById("nodeQuery").value = "";
-      document.getElementById("focusMode").value = "neighbor";
-      try {
-        renderFiltered();
-      } catch (err) {
-        document.getElementById("meta").textContent = `Error: ${err.message}`;
-      }
-    });
-
-    initialize().catch(err => {
+    init().catch(err => {
       document.getElementById("meta").textContent = `Error: ${err.message}`;
     });
   </script>
