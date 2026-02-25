@@ -21,7 +21,7 @@
       font-family: Helvetica, Arial, sans-serif;
     }
     .bar {
-      padding: 14px 16px;
+      padding: 10px 12px;
       background: var(--card);
       border-bottom: 1px solid var(--border);
       position: sticky;
@@ -30,76 +30,66 @@
     }
     .row {
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       align-items: center;
-      gap: 16px;
+      gap: 10px;
+      overflow-x: auto;
     }
     label {
-      font-size: clamp(18px, 1.6vw, 34px);
+      font-size: clamp(13px, 1.2vw, 19px);
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       white-space: nowrap;
       font-weight: 600;
+      flex: 0 0 auto;
     }
     input {
-      padding: 10px 12px;
-      font-size: clamp(14px, 1.1vw, 20px);
+      padding: 5px 8px;
+      font-size: clamp(12px, 1vw, 14px);
       border: 1px solid #d0d0d0;
-      border-radius: 8px;
-      min-width: 140px;
+      border-radius: 6px;
+      min-width: 88px;
       line-height: 1.1;
     }
     input[type="number"] {
-      width: 150px;
+      width: 90px;
     }
     input[type="text"] {
-      width: 340px;
+      width: 230px;
     }
     button {
-      padding: 12px 22px;
-      border-radius: 10px;
+      padding: 6px 14px;
+      border-radius: 8px;
       border: 1px solid var(--blue);
       background: var(--blue);
       color: #fff;
-      font-size: clamp(15px, 1.2vw, 22px);
+      font-size: clamp(12px, 1vw, 14px);
       font-weight: 600;
       cursor: pointer;
+      flex: 0 0 auto;
     }
     .hint {
-      font-size: clamp(12px, 1vw, 18px);
+      font-size: 12px;
       color: var(--muted);
+      white-space: nowrap;
+      flex: 0 0 auto;
     }
     .count {
-      font-size: clamp(13px, 1vw, 19px);
+      font-size: 12px;
       color: #222;
       font-weight: 600;
+      white-space: nowrap;
+      flex: 0 0 auto;
     }
     #network {
       width: 100%;
-      height: calc(100vh - 96px);
+      height: calc(100vh - 66px);
       background: #fff;
     }
     @media (max-width: 900px) {
       #network {
-        height: calc(100vh - 150px);
-      }
-      label {
-        font-size: 16px;
-      }
-      input {
-        font-size: 14px;
-        padding: 8px 10px;
-      }
-      input[type="number"] {
-        width: 110px;
-      }
-      input[type="text"] {
-        width: 220px;
-      }
-      button {
-        font-size: 15px;
-        padding: 9px 16px;
+        height: calc(100vh - 66px);
       }
     }
   </style>
@@ -142,6 +132,27 @@
       for (const t of pos) if (rel.includes(t)) return "+";
       for (const t of neg) if (rel.includes(t)) return "-";
       return "-";
+    }
+
+    function hexToRgb(hex) {
+      const h = String(hex).replace("#", "");
+      return {
+        r: parseInt(h.slice(0, 2), 16),
+        g: parseInt(h.slice(2, 4), 16),
+        b: parseInt(h.slice(4, 6), 16)
+      };
+    }
+
+    function logFraction(value, minValue, maxValue) {
+      if (maxValue <= minValue) return 1.0;
+      return (Math.log1p(value) - Math.log1p(minValue)) / (Math.log1p(maxValue) - Math.log1p(minValue));
+    }
+
+    function colorWithIntensity(hexColor, frac, alphaMin, alphaMax) {
+      const f = Math.max(0, Math.min(1, frac));
+      const alpha = alphaMin + f * (alphaMax - alphaMin);
+      const rgb = hexToRgb(hexColor);
+      return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha.toFixed(3)})`;
     }
 
     function buildBase(rows) {
@@ -247,28 +258,30 @@
       const nodePaperValues = [...nodes.values()].map(n => Math.max(0, n.paper_count));
       const minPaper = nodePaperValues.length ? Math.min(...nodePaperValues) : 1;
       const maxPaper = nodePaperValues.length ? Math.max(...nodePaperValues) : 1;
+      const edgePaperValues = filteredEdges.map(e => Math.max(1, e.paper_count));
+      const minEdgePaper = edgePaperValues.length ? Math.min(...edgePaperValues) : 1;
+      const maxEdgePaper = edgePaperValues.length ? Math.max(...edgePaperValues) : 1;
 
       const visNodes = [...nodes.values()].map(n => {
-        let size = 18;
-        if (maxPaper > minPaper) {
-          const frac = (Math.log1p(Math.max(1, n.paper_count)) - Math.log1p(Math.max(1, minPaper))) /
-            (Math.log1p(Math.max(1, maxPaper)) - Math.log1p(Math.max(1, minPaper)));
-          const outMin = fullGraphMode ? 5 : 12;
-          const outMax = fullGraphMode ? 14 : 58;
-          size = outMin + frac * (outMax - outMin);
-        }
+        const frac = logFraction(Math.max(1, n.paper_count), Math.max(1, minPaper), Math.max(1, maxPaper));
+        const outMin = fullGraphMode ? 4 : 8;
+        const outMax = fullGraphMode ? 10 : 28;
+        const size = outMin + frac * (outMax - outMin);
+        const nodeColor = colorWithIntensity("#458B73", frac, 0.35, 0.96);
 
         return {
           id: n.id,
           label: fullGraphMode ? "" : `${n.name} (${n.id})`,
           size,
           title: `entity_id: ${n.id} | name: ${n.name} | c: ${n.chunk_count} | p: ${n.paper_count}`,
-          color: { background: "#458B73", border: "#458B73", highlight: { background: "#458B73", border: "#2D5E4E" } }
+          color: { background: nodeColor, border: "#458B73", highlight: { background: nodeColor, border: "#2D5E4E" } }
         };
       });
 
       const visEdges = filteredEdges.map(e => {
         const sign = relationPolarity(e.relation);
+        const frac = logFraction(Math.max(1, e.paper_count), Math.max(1, minEdgePaper), Math.max(1, maxEdgePaper));
+        const edgeColor = colorWithIntensity("#458B73", frac, 0.20, 0.95);
         return {
           from: e.from,
           to: e.to,
@@ -276,7 +289,7 @@
           title: `relation: ${e.relation} | sign: ${sign} | c: ${e.chunk_count} | p: ${e.paper_count} | ${e.from} -> ${e.to}`,
           width: fullGraphMode ? 0.8 : 2.0,
           length: 130,
-          color: { color: "#458B73", highlight: "#458B73", hover: "#458B73" },
+          color: { color: edgeColor, highlight: "#458B73", hover: "#458B73" },
           font: { color: sign === "+" ? "#2EAD4A" : "#E53935" },
           arrows: "to"
         };
