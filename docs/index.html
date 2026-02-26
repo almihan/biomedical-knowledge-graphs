@@ -344,7 +344,7 @@
           tooltipDelay: 150,
           navigationButtons: true
         },
-        physics: view.fullGraphMode ? { enabled: false } : {
+        physics: {
           enabled: true,
           solver: "forceAtlas2Based",
           forceAtlas2Based: {
@@ -371,6 +371,7 @@
         NET.setData(data);
         NET.setOptions(options);
       }
+      NET.startSimulation();
 
       document.getElementById("meta").textContent = `Total Nodes: ${TOTAL_NODES} | Total Edges: ${TOTAL_EDGES}`;
     }
