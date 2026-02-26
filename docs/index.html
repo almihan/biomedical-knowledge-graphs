@@ -125,13 +125,21 @@
       return Number.isFinite(n) ? n : 0;
     }
 
-    function relationPolarity(relName) {
+    function relationCategory(relName) {
       const rel = String(relName || "").toLowerCase().trim();
-      const pos = ["activation", "activate", "upregulate", "increase", "promote", "stimulate", "enhance", "secrete", "secreted", "proliferation", "express", "induce", "support"];
-      const neg = ["inhibit", "inhibition", "suppress", "suppression", "decrease", "downregulate", "reduce", "repress", "block", "attenuate", "impair"];
-      for (const t of pos) if (rel.includes(t)) return "+";
-      for (const t of neg) if (rel.includes(t)) return "-";
-      return "-";
+      const secrete = ["secrete","secretes","secreted","secreting","produce","produces","produced","producing","production","release","releases","released","releasing","shed","sheds","shedding","export","exports","exported","exporting"];
+      const recruit = ["recruit","recruits","recruited","recruiting","attract","attracts","attracted","attracting","chemoattract","chemoattracts","chemoattracted","influx","migrate","migration","migrates","migrated","migrating","infiltrate","infiltrates","infiltrated","infiltrating"];
+      const inhibit = ["inhibit","inhibits","inhibited","inhibiting","inhibition","suppress","suppresses","suppressed","suppressing","suppression","block","blocks","blocked","blocking","prevent","prevents","prevented","preventing","reduce","reduces","reduced","reducing","reduction","downregulate","downregulates","downregulated","downregulating","decrease","decreases","decreased","decreasing","repress","repressed","attenuate","attenuated","impair","impaired"];
+      const proliferation = ["proliferate","proliferates","proliferated","proliferating","proliferation","expand","expands","expanded","expanding","expansion","growth","grow","grows","grew","grown"];
+      const activation = ["activate","activates","activated","activating","activation","stimulate","stimulates","stimulated","stimulating","trigger","triggers","triggered","triggering","induce","induces","induced","inducing","induction","upregulate","upregulates","upregulated","upregulating","increase","increases","increased","increasing","promote","promotes","promoted","promoting","enhance","enhances","enhanced","enhancing","support","supports","supported","supporting"];
+      const hasAny = (arr) => arr.some(tok => rel.includes(tok));
+
+      if (hasAny(secrete)) return "secrete";
+      if (hasAny(recruit)) return "recruit";
+      if (hasAny(inhibit)) return "inhibit";
+      if (hasAny(proliferation)) return "proliferation";
+      if (hasAny(activation)) return "activation";
+      return "activation";
     }
 
     function hexToRgb(hex) {
@@ -182,15 +190,20 @@
           if (!nodeMap.has(to)) nodeMap.set(to, { id: to, name: to, paper_count: 0, chunk_count: 0 });
 
           const rs = rel.stats || {};
-          const key = `${from}|||${to}|||${relation}`;
-          const curr = edgeMap.get(key) || { from, to, relation, paper_count: 0, chunk_count: 0 };
+          const category = relationCategory(relation);
+          const key = `${from}|||${to}|||${category}`;
+          const curr = edgeMap.get(key) || { from, to, category, relation_names: new Set(), paper_count: 0, chunk_count: 0 };
+          curr.relation_names.add(relation);
           curr.paper_count += asInt(rs.paper_count);
           curr.chunk_count += asInt(rs.chunk_count || rs.chunck_count);
           edgeMap.set(key, curr);
         }
       }
-
-      return { nodeMap, edges: [...edgeMap.values()] };
+      const edges = [...edgeMap.values()].map(e => ({
+        ...e,
+        relation_names: [...e.relation_names].sort()
+      }));
+      return { nodeMap, edges };
     }
 
     function resolveSelectedNode(needle, nodes) {
@@ -271,26 +284,27 @@
 
         return {
           id: n.id,
-          label: fullGraphMode ? "" : `${n.name} (${n.id})`,
+          label: fullGraphMode ? "" : `${n.id}`,
           size,
-          title: `entity_id: ${n.id} | name: ${n.name} | c: ${n.chunk_count} | p: ${n.paper_count}`,
+          title: `entity_id: ${n.id} | c: ${n.chunk_count} | p: ${n.paper_count}`,
           color: { background: nodeColor, border: "#458B73", highlight: { background: nodeColor, border: "#2D5E4E" } }
         };
       });
 
       const visEdges = filteredEdges.map(e => {
-        const sign = relationPolarity(e.relation);
+        const sign = e.category === "inhibit" ? "-" : "+";
         const frac = logFraction(Math.max(1, e.paper_count), Math.max(1, minEdgePaper), Math.max(1, maxEdgePaper));
         const edgeColor = colorWithIntensity("#458B73", frac, 0.20, 0.95);
+        const signColor = sign === "+" ? "#2EAD4A" : "#E53935";
         return {
           from: e.from,
           to: e.to,
           label: fullGraphMode ? "" : sign,
-          title: `relation: ${e.relation} | sign: ${sign} | c: ${e.chunk_count} | p: ${e.paper_count} | ${e.from} -> ${e.to}`,
+          title: `c: ${e.category} | r: ${(e.relation_names || []).join("; ")} | sign: ${sign} | ch: ${e.chunk_count} | p: ${e.paper_count} | ${e.from} -> ${e.to}`,
           width: fullGraphMode ? 0.8 : 2.0,
           length: 130,
           color: { color: edgeColor, highlight: "#458B73", hover: "#458B73" },
-          font: { color: sign === "+" ? "#2EAD4A" : "#E53935" },
+          font: { color: signColor },
           arrows: "to"
         };
       });
