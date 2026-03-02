@@ -12,13 +12,12 @@
       --border: #dddddd;
       --text: #111111;
       --muted: #666666;
-      --blue: #1677ff;
     }
     body {
       margin: 0;
+      font-family: Helvetica, Arial, sans-serif;
       background: var(--bg);
       color: var(--text);
-      font-family: Helvetica, Arial, sans-serif;
     }
     .bar {
       padding: 10px 12px;
@@ -30,67 +29,77 @@
     }
     .row {
       display: flex;
-      flex-wrap: nowrap;
-      align-items: center;
+      flex-wrap: wrap;
       gap: 10px;
-      overflow-x: auto;
+      align-items: center;
     }
     label {
-      font-size: clamp(13px, 1.2vw, 19px);
+      font-size: 13px;
+      color: #333;
       display: inline-flex;
       align-items: center;
       gap: 6px;
       white-space: nowrap;
-      font-weight: 600;
-      flex: 0 0 auto;
     }
     input {
-      padding: 5px 8px;
-      font-size: clamp(12px, 1vw, 14px);
+      padding: 4px 6px;
+      font-size: 13px;
       border: 1px solid #d0d0d0;
       border-radius: 6px;
-      min-width: 88px;
       line-height: 1.1;
     }
     input[type="number"] {
       width: 90px;
     }
     input[type="text"] {
-      width: 230px;
+      width: 280px;
     }
     button {
-      padding: 6px 14px;
-      border-radius: 8px;
-      border: 1px solid var(--blue);
-      background: var(--blue);
-      color: #fff;
-      font-size: clamp(12px, 1vw, 14px);
-      font-weight: 600;
+      padding: 6px 10px;
+      font-size: 13px;
       cursor: pointer;
-      flex: 0 0 auto;
+      border: 1px solid #1677ff;
+      background: #1677ff;
+      color: #fff;
+      border-radius: 8px;
+      font-weight: 600;
+    }
+    .legend {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+      margin-left: 6px;
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: #333;
+      white-space: nowrap;
+    }
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      border: 1px solid #666;
+      display: inline-block;
     }
     .hint {
       font-size: 12px;
       color: var(--muted);
       white-space: nowrap;
-      flex: 0 0 auto;
     }
     .count {
       font-size: 12px;
       color: #222;
       font-weight: 600;
       white-space: nowrap;
-      flex: 0 0 auto;
     }
     #network {
       width: 100%;
-      height: calc(100vh - 66px);
+      height: calc(100vh - 64px);
       background: #fff;
-    }
-    @media (max-width: 900px) {
-      #network {
-        height: calc(100vh - 66px);
-      }
     }
   </style>
 </head>
@@ -100,10 +109,17 @@
       <label>Top Nodes <input id="topNodes" type="number" min="0" value="0"></label>
       <label>Top Relations <input id="topRelations" type="number" min="0" value="0"></label>
       <label>Select Node
-        <input id="selectedNode" type="text" list="node-list" placeholder="entity_id or name contains">
+        <input id="selectedNode" type="text" list="node-list" placeholder="cell id/name or gene id/name">
         <datalist id="node-list"></datalist>
       </label>
+      <label><input type="radio" name="scope" value="all" checked> all</label>
+      <label><input type="radio" name="scope" value="cell"> cell</label>
+      <label><input type="radio" name="scope" value="gene_protein"> gene/protein</label>
       <button id="applyBtn" type="button">Apply</button>
+      <span class="legend">
+        <span class="legend-item"><span class="swatch" style="background:#458B73;"></span>cell</span>
+        <span class="legend-item"><span class="swatch" style="background:#FFAA00;"></span>gene/protein</span>
+      </span>
       <span class="hint">Set 0 for full top list.</span>
       <span id="meta" class="count">Loading graph.json...</span>
     </div>
@@ -112,43 +128,42 @@
 
   <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
   <script>
-    const bySupport = (a, b) => (b.chunk_count - a.chunk_count) || (b.paper_count - a.paper_count);
+    const POSITIVE_REL_TERMS = new Set([
+      "accumulate", "act", "activate", "affect", "associate", "attract", "catalyze", "cause",
+      "chemoattract", "contribute", "determine", "differentiate", "elevate", "encode", "incite",
+      "increase", "indicate", "induce", "infiltrate", "influence", "lead", "maintain", "mediate",
+      "perpetuate", "play", "produce", "proliferate", "promote", "provide", "recognize", "recruit",
+      "regulate", "related", "release", "retrieve", "secrete", "sensitize", "stimulate", "synergize",
+      "synthesis", "target", "trigger", "upregulate"
+    ]);
 
-    let BASE_NODE_MAP = new Map();
-    let BASE_EDGES = [];
-    let TOTAL_NODES = 0;
-    let TOTAL_EDGES = 0;
+    const NEGATIVE_REL_TERMS = new Set([
+      "antagonize", "attenuate", "clearance", "curtail", "decrease", "destroy", "downregulate", "impair",
+      "impede", "inactivate", "inhibit", "prevent", "reduce", "repress", "silence", "suppress"
+    ]);
+
+    let BASE_NODES = new Map();
+    let BASE_EDGES = new Map();
+    let GLOBAL_NODE_PAPER_COUNTS = [];
+    let NODE_CHOICES = [];
     let NET = null;
 
     function asInt(v) {
       const n = Number(v);
-      return Number.isFinite(n) ? n : 0;
+      return Number.isFinite(n) ? Math.trunc(n) : 0;
     }
 
-    function relationCategory(relName) {
-      const rel = String(relName || "").toLowerCase().trim();
-      const secrete = ["secrete","secretes","secreted","secreting","produce","produces","produced","producing","production","release","releases","released","releasing","shed","sheds","shedding","export","exports","exported","exporting"];
-      const recruit = ["recruit","recruits","recruited","recruiting","attract","attracts","attracted","attracting","chemoattract","chemoattracts","chemoattracted","influx","migrate","migration","migrates","migrated","migrating","infiltrate","infiltrates","infiltrated","infiltrating"];
-      const inhibit = ["inhibit","inhibits","inhibited","inhibiting","inhibition","suppress","suppresses","suppressed","suppressing","suppression","block","blocks","blocked","blocking","prevent","prevents","prevented","preventing","reduce","reduces","reduced","reducing","reduction","downregulate","downregulates","downregulated","downregulating","decrease","decreases","decreased","decreasing","repress","repressed","attenuate","attenuated","impair","impaired"];
-      const proliferation = ["proliferate","proliferates","proliferated","proliferating","proliferation","expand","expands","expanded","expanding","expansion","growth","grow","grows","grew","grown"];
-      const activation = ["activate","activates","activated","activating","activation","stimulate","stimulates","stimulated","stimulating","trigger","triggers","triggered","triggering","induce","induces","induced","inducing","induction","upregulate","upregulates","upregulated","upregulating","increase","increases","increased","increasing","promote","promotes","promoted","promoting","enhance","enhances","enhanced","enhancing","support","supports","supported","supporting"];
-      const hasAny = (arr) => arr.some(tok => rel.includes(tok));
-
-      if (hasAny(secrete)) return "secrete";
-      if (hasAny(recruit)) return "recruit";
-      if (hasAny(inhibit)) return "inhibit";
-      if (hasAny(proliferation)) return "proliferation";
-      if (hasAny(activation)) return "activation";
-      return "activation";
+    function getCount(stats, primary, fallback) {
+      if (!stats || typeof stats !== "object") return 0;
+      if (stats[primary] !== undefined) return asInt(stats[primary]);
+      if (stats[fallback] !== undefined) return asInt(stats[fallback]);
+      return 0;
     }
 
-    function hexToRgb(hex) {
-      const h = String(hex).replace("#", "");
-      return {
-        r: parseInt(h.slice(0, 2), 16),
-        g: parseInt(h.slice(2, 4), 16),
-        b: parseInt(h.slice(4, 6), 16)
-      };
+    function scaleSize(value, minValue, maxValue, outMin, outMax) {
+      if (maxValue <= minValue) return (outMin + outMax) / 2.0;
+      const frac = (Math.log1p(value) - Math.log1p(minValue)) / (Math.log1p(maxValue) - Math.log1p(minValue));
+      return outMin + frac * (outMax - outMin);
     }
 
     function logFraction(value, minValue, maxValue) {
@@ -156,173 +171,382 @@
       return (Math.log1p(value) - Math.log1p(minValue)) / (Math.log1p(maxValue) - Math.log1p(minValue));
     }
 
-    function colorWithIntensity(hexColor, frac, alphaMin, alphaMax) {
+    function hexToRgb(hex) {
+      const h = String(hex || "").replace("#", "");
+      return {
+        r: parseInt(h.slice(0, 2), 16),
+        g: parseInt(h.slice(2, 4), 16),
+        b: parseInt(h.slice(4, 6), 16)
+      };
+    }
+
+    function colorWithIntensity(hexColor, frac, alphaMin = 0.25, alphaMax = 0.95) {
       const f = Math.max(0, Math.min(1, frac));
       const alpha = alphaMin + f * (alphaMax - alphaMin);
       const rgb = hexToRgb(hexColor);
       return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha.toFixed(3)})`;
     }
 
-    function buildBase(rows) {
-      const nodeMap = new Map();
-      const edgeMap = new Map();
+    function relationCategory(relationName) {
+      const rel = String(relationName || "").toLowerCase().trim();
+      if (NEGATIVE_REL_TERMS.has(rel)) return "-";
+      if (POSITIVE_REL_TERMS.has(rel)) return "+";
 
-      for (const row of rows) {
-        const entityId = String(row.entity_id || "").trim();
-        if (!entityId) continue;
-        const name = String(row.name || "").trim() || entityId;
-        const stats = row.stats || {};
-        nodeMap.set(entityId, {
-          id: entityId,
-          name,
-          paper_count: asInt(stats.paper_count),
-          chunk_count: asInt(stats.chunk_count || stats.chunck_count)
-        });
+      const tokens = rel.match(/[a-z]+/g) || [];
+      if (tokens.some(t => NEGATIVE_REL_TERMS.has(t))) return "-";
+      if (tokens.some(t => POSITIVE_REL_TERMS.has(t))) return "+";
+      return "+";
+    }
 
-        const rels = Array.isArray(row.relations) ? row.relations : [];
-        for (const rel of rels) {
-          const from = String(rel["subjective entity_id"] || "").trim();
-          const to = String(rel["objective entity_id"] || "").trim();
-          const relation = String(rel.relation || "").trim();
-          if (!from || !to || !relation) continue;
+    function signColor(sign) {
+      return sign === "+" ? "#2EAD4A" : "#E53935";
+    }
 
-          if (!nodeMap.has(from)) nodeMap.set(from, { id: from, name: from, paper_count: 0, chunk_count: 0 });
-          if (!nodeMap.has(to)) nodeMap.set(to, { id: to, name: to, paper_count: 0, chunk_count: 0 });
-
-          const rs = rel.stats || {};
-          const category = relationCategory(relation);
-          const key = `${from}|||${to}|||${category}`;
-          const curr = edgeMap.get(key) || { from, to, category, relation_names: new Set(), paper_count: 0, chunk_count: 0 };
-          curr.relation_names.add(relation);
-          curr.paper_count += asInt(rs.paper_count);
-          curr.chunk_count += asInt(rs.chunk_count || rs.chunck_count);
-          edgeMap.set(key, curr);
-        }
-      }
-      const edges = [...edgeMap.values()].map(e => ({
-        ...e,
-        relation_names: [...e.relation_names].sort()
-      }));
-      return { nodeMap, edges };
+    function nodeMatchesScope(nodeMeta, scope) {
+      if (scope === "all") return true;
+      const obj = String(nodeMeta.obj || "").toLowerCase();
+      if (scope === "cell") return obj === "cell";
+      if (scope === "gene_protein") return obj === "gene" || obj === "protein";
+      return true;
     }
 
     function resolveSelectedNode(needle, nodes) {
-      const q = String(needle || "").trim().toLowerCase();
+      const raw = String(needle || "").trim();
+      const q = raw.toLowerCase();
       if (!q) return "";
 
       if (nodes.has(q)) return q;
 
-      const list = [...nodes.values()];
-      for (const n of list) if (String(n.id).toLowerCase() === q) return n.id;
-      for (const n of list) if (String(n.name).toLowerCase() === q) return n.id;
-      for (const n of list) {
-        if (String(n.id).toLowerCase().includes(q) || String(n.name).toLowerCase().includes(q)) {
-          return n.id;
-        }
+      for (const [eid] of nodes) {
+        if (eid.toLowerCase() === q) return eid;
       }
+
+      for (const [eid, meta] of nodes) {
+        const terms = (meta.search_terms || []).map(t => String(t).toLowerCase()).filter(Boolean);
+        if (terms.some(t => t === q)) return eid;
+      }
+
+      for (const [eid, meta] of nodes) {
+        const terms = (meta.search_terms || []).map(t => String(t).toLowerCase()).filter(Boolean);
+        if (eid.toLowerCase().includes(q) || terms.some(t => t.includes(q))) return eid;
+      }
+
       return "";
     }
 
-    function computeView(topNodes, topRelations, selectedNodeRaw) {
-      const selectedMode = String(selectedNodeRaw || "").trim() !== "";
-      const fullGraphMode = topNodes === 0 && topRelations === 0 && !selectedMode;
+    function bySupport(a, b) {
+      return (b.chunk_count - a.chunk_count) || (b.paper_count - a.paper_count);
+    }
 
-      let nodes = new Map(BASE_NODE_MAP);
-      let filteredEdges = BASE_EDGES.filter(e => nodes.has(e.from) && nodes.has(e.to));
+    function parseRows(rows) {
+      const nodes = new Map();
+      const edgeMap = new Map();
+      const globalNodePaperCounts = [];
+      const nodeChoices = [];
 
-      if (!selectedMode && topNodes > 0 && nodes.size > topNodes) {
-        const rankedNodes = [...nodes.entries()].sort((a, b) => bySupport(a[1], b[1])).slice(0, topNodes);
-        nodes = new Map(rankedNodes);
-        filteredEdges = filteredEdges.filter(e => nodes.has(e.from) && nodes.has(e.to));
-      }
+      for (const row of rows) {
+        const normId = String(row.id || "").trim();
+        const rawTag = String(row.tag || "").trim();
+        const tag = rawTag.startsWith("[") && rawTag.endsWith("]") ? rawTag.slice(1, -1) : rawTag;
+        const nodeId = tag || normId;
+        if (!nodeId) continue;
 
-      if (selectedMode) {
-        const chosen = resolveSelectedNode(selectedNodeRaw, nodes);
-        if (chosen) {
-          filteredEdges = filteredEdges.filter(e => e.from === chosen || e.to === chosen);
-          const connected = new Set([chosen]);
-          for (const e of filteredEdges) {
-            connected.add(e.from);
-            connected.add(e.to);
+        const objType = String(row.obj || "").trim().toLowerCase();
+        const mentions = Array.isArray(row.mentions) ? row.mentions : [];
+        const fallbackMention = mentions.length ? String(mentions[0] || "").trim() : "";
+
+        const cellId = normId;
+        const cellName = String(row.canonical_name || "").trim() || fallbackMention || nodeId;
+
+        const geneId = normId;
+        const geneName = String(row.canonical_name || "").trim() || fallbackMention || nodeId;
+        const geneSymbol = String(row.canonical_symbol || "").trim();
+
+        const proteinId = String(row.UniProt || "").trim();
+        const proteinName = String(row.canonical_protein_name || "").trim();
+
+        let canonicalLabel;
+        let searchTerms;
+
+        if (objType === "gene") {
+          canonicalLabel = geneSymbol || geneName || nodeId;
+          searchTerms = [geneId, geneName];
+        } else if (objType === "protein") {
+          canonicalLabel = proteinName || geneSymbol || geneName || nodeId;
+          searchTerms = [geneId, geneName];
+        } else {
+          canonicalLabel = cellName;
+          searchTerms = [cellId, cellName];
+        }
+
+        searchTerms = searchTerms.filter(Boolean);
+
+        const stats = row.stats && typeof row.stats === "object" ? row.stats : {};
+        const paperCount = getCount(stats, "paper_count", "paper_count");
+        const chunkCount = getCount(stats, "chunk_count", "chunck_count");
+        globalNodePaperCounts.push(Math.max(0, paperCount));
+
+        nodes.set(nodeId, {
+          entity_id: nodeId,
+          id: normId,
+          name: canonicalLabel,
+          obj: objType,
+          cell_id: cellId,
+          cell_name: cellName,
+          gene_id: geneId,
+          gene_name: geneName,
+          protein_id: proteinId,
+          protein_name: proteinName,
+          search_terms: searchTerms,
+          paper_count: paperCount,
+          chunk_count: chunkCount
+        });
+
+        if (normId) nodeChoices.push(normId);
+        if (String(row.canonical_name || "").trim()) nodeChoices.push(String(row.canonical_name).trim());
+
+        const relations = Array.isArray(row.relations) ? row.relations : [];
+        for (const rel of relations) {
+          if (!rel || typeof rel !== "object") continue;
+
+          const subj = String(rel.subject || "").trim();
+          const obj = String(rel.object || "").trim();
+          const relationName = String(rel.predicate || "").trim();
+
+          if (!subj || !obj || !relationName) continue;
+
+          const relStats = rel.stats && typeof rel.stats === "object" ? rel.stats : {};
+          const relP = getCount(relStats, "paper_count", "paper_count");
+          const relC = getCount(relStats, "chunk_count", "chunck_count");
+          const sign = relationCategory(relationName);
+          const key = `${subj}|||${obj}|||${sign}`;
+
+          const current = edgeMap.get(key) || {
+            subj,
+            obj,
+            sign,
+            paper_count: 0,
+            chunk_count: 0,
+            relation_names: new Set()
+          };
+          current.paper_count += relP;
+          current.chunk_count += relC;
+          current.relation_names.add(relationName);
+          edgeMap.set(key, current);
+
+          if (!nodes.has(obj)) {
+            nodes.set(obj, {
+              entity_id: obj,
+              id: "",
+              name: obj,
+              obj: "",
+              cell_id: "",
+              cell_name: obj,
+              gene_id: "",
+              gene_name: "",
+              protein_id: "",
+              protein_name: "",
+              search_terms: [obj],
+              paper_count: 0,
+              chunk_count: 0
+            });
           }
-          nodes = new Map([...nodes.entries()].filter(([k]) => connected.has(k)));
-
-          if (topNodes > 0 && nodes.size > topNodes) {
-            const rankedLocal = [...nodes.entries()].sort((a, b) => bySupport(a[1], b[1])).slice(0, topNodes);
-            const keep = new Set(rankedLocal.map(([id]) => id));
-            keep.add(chosen);
-            nodes = new Map([...nodes.entries()].filter(([k]) => keep.has(k)));
-            filteredEdges = filteredEdges.filter(e => nodes.has(e.from) && nodes.has(e.to));
+          if (!nodes.has(subj)) {
+            nodes.set(subj, {
+              entity_id: subj,
+              id: "",
+              name: subj,
+              obj: "",
+              cell_id: "",
+              cell_name: subj,
+              gene_id: "",
+              gene_name: "",
+              protein_id: "",
+              protein_name: "",
+              search_terms: [subj],
+              paper_count: 0,
+              chunk_count: 0
+            });
           }
         }
       }
 
-      if (topRelations > 0 && filteredEdges.length > topRelations) {
-        const rankedEdges = [...filteredEdges].sort(bySupport).slice(0, topRelations);
-        filteredEdges = rankedEdges;
-        const connected = new Set();
-        for (const e of rankedEdges) {
-          connected.add(e.from);
-          connected.add(e.to);
-        }
-        nodes = new Map([...nodes.entries()].filter(([k]) => connected.has(k)));
+      const dedupChoices = [];
+      const seen = new Set();
+      for (const c of nodeChoices) {
+        if (!c || seen.has(c)) continue;
+        seen.add(c);
+        dedupChoices.push(c);
       }
 
-      const nodePaperValues = [...nodes.values()].map(n => Math.max(0, n.paper_count));
-      const minPaper = nodePaperValues.length ? Math.min(...nodePaperValues) : 1;
-      const maxPaper = nodePaperValues.length ? Math.max(...nodePaperValues) : 1;
-      const edgePaperValues = filteredEdges.map(e => Math.max(1, e.paper_count));
-      const minEdgePaper = edgePaperValues.length ? Math.min(...edgePaperValues) : 1;
-      const maxEdgePaper = edgePaperValues.length ? Math.max(...edgePaperValues) : 1;
+      for (const edge of edgeMap.values()) {
+        edge.relation_names = Array.from(edge.relation_names).map(String).filter(Boolean).sort((a, b) => a.localeCompare(b));
+      }
 
-      const visNodes = [...nodes.values()].map(n => {
-        const frac = logFraction(Math.max(1, n.paper_count), Math.max(1, minPaper), Math.max(1, maxPaper));
-        const outMin = fullGraphMode ? 4 : 8;
-        const outMax = fullGraphMode ? 10 : 28;
-        const size = outMin + frac * (outMax - outMin);
-        const nodeColor = colorWithIntensity("#458B73", frac, 0.35, 0.96);
-
-        return {
-          id: n.id,
-          label: fullGraphMode ? "" : `${n.id}`,
-          size,
-          title: `entity_id: ${n.id} | c: ${n.chunk_count} | p: ${n.paper_count}`,
-          color: { background: nodeColor, border: "#458B73", highlight: { background: nodeColor, border: "#2D5E4E" } }
-        };
-      });
-
-      const visEdges = filteredEdges.map(e => {
-        const sign = e.category === "inhibit" ? "-" : "+";
-        const frac = logFraction(Math.max(1, e.paper_count), Math.max(1, minEdgePaper), Math.max(1, maxEdgePaper));
-        const edgeColor = colorWithIntensity("#458B73", frac, 0.20, 0.95);
-        const signColor = sign === "+" ? "#2EAD4A" : "#E53935";
-        return {
-          from: e.from,
-          to: e.to,
-          label: fullGraphMode ? "" : sign,
-          title: `c: ${e.category} | r: ${(e.relation_names || []).join("; ")} | sign: ${sign} | ch: ${e.chunk_count} | p: ${e.paper_count} | ${e.from} -> ${e.to}`,
-          width: fullGraphMode ? 0.8 : 2.0,
-          length: 130,
-          color: { color: edgeColor, highlight: "#458B73", hover: "#458B73" },
-          font: { color: signColor },
-          arrows: "to"
-        };
-      });
-
-      return { fullGraphMode, nodes: visNodes, edges: visEdges };
+      return { nodes, edges: edgeMap, globalNodePaperCounts, nodeChoices: dedupChoices };
     }
 
     function readInputs() {
       const topNodes = Math.max(0, Number(document.getElementById("topNodes").value) || 0);
       const topRelations = Math.max(0, Number(document.getElementById("topRelations").value) || 0);
-      const selectedNode = document.getElementById("selectedNode").value || "";
-      return { topNodes, topRelations, selectedNode };
+      const selectedNode = String(document.getElementById("selectedNode").value || "");
+      const scope = String(document.querySelector('input[name="scope"]:checked')?.value || "all");
+      return { topNodes, topRelations, selectedNode, scope };
+    }
+
+    function computeView(params) {
+      const filterScope = ["all", "cell", "gene_protein"].includes(params.scope) ? params.scope : "all";
+      const selectedMode = Boolean(String(params.selectedNode || "").trim());
+      const fullGraphMode = params.topNodes === 0 && params.topRelations === 0 && !selectedMode;
+
+      let nodes = new Map(BASE_NODES);
+      let edgeEntries = Array.from(BASE_EDGES.entries()).filter(([, e]) => nodes.has(e.subj) && nodes.has(e.obj));
+
+      if (filterScope !== "all") {
+        nodes = new Map(Array.from(nodes.entries()).filter(([, n]) => nodeMatchesScope(n, filterScope)));
+      }
+
+      if (!selectedMode && params.topNodes > 0 && nodes.size > params.topNodes) {
+        const rankedNodes = Array.from(nodes.entries())
+          .sort((a, b) => bySupport(a[1], b[1]))
+          .slice(0, params.topNodes);
+        nodes = new Map(rankedNodes);
+      }
+
+      edgeEntries = edgeEntries.filter(([, e]) => nodes.has(e.subj) && nodes.has(e.obj));
+
+      if (selectedMode) {
+        const chosen = resolveSelectedNode(params.selectedNode, nodes);
+        if (chosen) {
+          edgeEntries = edgeEntries.filter(([, e]) => e.subj === chosen || e.obj === chosen);
+          const connected = new Set([chosen]);
+          for (const [, e] of edgeEntries) {
+            connected.add(e.subj);
+            connected.add(e.obj);
+          }
+          nodes = new Map(Array.from(nodes.entries()).filter(([id]) => connected.has(id)));
+
+          if (params.topNodes > 0 && nodes.size > params.topNodes) {
+            const rankedLocal = Array.from(nodes.entries())
+              .sort((a, b) => bySupport(a[1], b[1]))
+              .slice(0, params.topNodes);
+            const localIds = new Set(rankedLocal.map(([id]) => id));
+            localIds.add(chosen);
+            nodes = new Map(Array.from(nodes.entries()).filter(([id]) => localIds.has(id)));
+          }
+
+          edgeEntries = edgeEntries.filter(([, e]) => nodes.has(e.subj) && nodes.has(e.obj));
+        }
+      }
+
+      if (params.topRelations > 0 && edgeEntries.length > params.topRelations) {
+        edgeEntries = edgeEntries
+          .sort((a, b) => bySupport(a[1], b[1]))
+          .slice(0, params.topRelations);
+
+        const connected = new Set();
+        for (const [, e] of edgeEntries) {
+          connected.add(e.subj);
+          connected.add(e.obj);
+        }
+        nodes = new Map(Array.from(nodes.entries()).filter(([id]) => connected.has(id)));
+      }
+
+      const objColors = {
+        cell: "#458B73",
+        protein: "#FFAA00",
+        gene: "#FFAA00"
+      };
+
+      const paperValues = GLOBAL_NODE_PAPER_COUNTS.length ? GLOBAL_NODE_PAPER_COUNTS : [1];
+      const minPaper = Math.min(...paperValues);
+      const maxPaper = Math.max(...paperValues);
+
+      const nodeSizes = new Map();
+      const visNodes = [];
+
+      for (const [entityId, n] of nodes) {
+        const size = scaleSize(
+          Math.max(1, n.paper_count),
+          Math.max(1, minPaper),
+          Math.max(1, maxPaper),
+          fullGraphMode ? 4.0 : 8.0,
+          fullGraphMode ? 10.0 : 32.0
+        );
+        nodeSizes.set(entityId, size);
+
+        const label = fullGraphMode ? "" : (String(n.name || "").trim() || entityId);
+        const objKind = String(n.obj || "").toLowerCase();
+        let title;
+
+        if (objKind === "cell") {
+          title = `obj: cell | cell_id: ${n.cell_id || ""} | cell_name: ${n.cell_name || ""} | paragraph: ${n.chunk_count} | paper: ${n.paper_count}`;
+        } else if (objKind === "protein") {
+          title = `obj: protein | gene_id: ${n.gene_id || ""} | gene_canonical_name: ${n.gene_name || ""} | protein_id: ${n.protein_id || ""} | protein_name: ${n.protein_name || ""} | paragraph: ${n.chunk_count} | paper: ${n.paper_count}`;
+        } else {
+          title = `obj: gene | gene_id: ${n.gene_id || ""} | gene_canonical_name: ${n.gene_name || ""} | paragraph: ${n.chunk_count} | paper: ${n.paper_count}`;
+        }
+
+        const baseColor = objColors[objKind] || "#6C757D";
+        const frac = logFraction(Math.max(1, n.paper_count), Math.max(1, Math.max(1, minPaper)), Math.max(1, maxPaper));
+        const color = colorWithIntensity(baseColor, frac, 0.35, 0.98);
+
+        visNodes.push({
+          id: entityId,
+          label,
+          size,
+          title,
+          color: {
+            background: color,
+            border: baseColor,
+            highlight: { background: color, border: baseColor }
+          }
+        });
+      }
+
+      const edgePaperValues = edgeEntries.map(([, e]) => Math.max(1, e.paper_count));
+      const minEdgePaper = edgePaperValues.length ? Math.min(...edgePaperValues) : 1;
+      const maxEdgePaper = edgePaperValues.length ? Math.max(...edgePaperValues) : 1;
+
+      const visEdges = edgeEntries.map(([, e]) => {
+        const c = Math.max(0, e.chunk_count);
+        const p = Math.max(0, e.paper_count);
+        const width = fullGraphMode ? 0.8 : 2.0;
+        const edgeLength = Math.trunc(90 + 2.2 * ((nodeSizes.get(e.subj) || 20.0) + (nodeSizes.get(e.obj) || 20.0)));
+        const baseSignColor = signColor(e.sign);
+        const frac = logFraction(Math.max(1, p), Math.max(1, minEdgePaper), Math.max(1, maxEdgePaper));
+        const edgeColor = colorWithIntensity(baseSignColor, frac, 0.2, 0.95);
+        const relationLabels = Array.isArray(e.relation_names) ? e.relation_names : [];
+        let relText = relationLabels.slice(0, 40).join("; ") || "(none)";
+        if (relationLabels.length > 40) {
+          relText += `; ... (+${relationLabels.length - 40} more)`;
+        }
+
+        return {
+          from: e.subj,
+          to: e.obj,
+          label: e.sign,
+          title: `relations: ${relText} | sign: ${e.sign} | paragraph: ${c} | paper: ${p} | ${e.subj} -> ${e.obj}`,
+          width,
+          length: edgeLength,
+          color: { color: edgeColor, highlight: "#458B73", hover: "#458B73" },
+          font: { color: baseSignColor },
+          arrows: "to"
+        };
+      });
+
+      return {
+        fullGraphMode,
+        nodeCount: visNodes.length,
+        edgeCount: visEdges.length,
+        nodes: visNodes,
+        edges: visEdges
+      };
     }
 
     function renderFromInputs() {
-      const { topNodes, topRelations, selectedNode } = readInputs();
-
-      const view = computeView(topNodes, topRelations, selectedNode);
+      const params = readInputs();
+      const view = computeView(params);
 
       const options = {
         nodes: {
@@ -344,26 +568,32 @@
           tooltipDelay: 150,
           navigationButtons: true
         },
-        physics: {
-          enabled: true,
-          solver: "forceAtlas2Based",
-          forceAtlas2Based: {
-            gravitationalConstant: -52,
-            centralGravity: 0.012,
-            springLength: 170,
-            springConstant: 0.05,
-            damping: 0.45,
-            avoidOverlap: 0.25
-          },
-          maxVelocity: 2.8,
-          minVelocity: 0.001,
-          timestep: 0.14,
-          adaptiveTimestep: true,
-          stabilization: { enabled: false }
-        }
+        physics: view.fullGraphMode
+          ? { enabled: false }
+          : {
+              enabled: true,
+              solver: "forceAtlas2Based",
+              forceAtlas2Based: {
+                gravitationalConstant: -52,
+                centralGravity: 0.012,
+                springLength: 170,
+                springConstant: 0.05,
+                damping: 0.45,
+                avoidOverlap: 0.25
+              },
+              maxVelocity: 2.8,
+              minVelocity: 0.001,
+              timestep: 0.14,
+              adaptiveTimestep: true,
+              stabilization: { enabled: false }
+            }
       };
 
-      const data = { nodes: new vis.DataSet(view.nodes), edges: new vis.DataSet(view.edges) };
+      const data = {
+        nodes: new vis.DataSet(view.nodes),
+        edges: new vis.DataSet(view.edges)
+      };
+
       const container = document.getElementById("network");
       if (!NET) {
         NET = new vis.Network(container, data, options);
@@ -371,30 +601,37 @@
         NET.setData(data);
         NET.setOptions(options);
       }
-      NET.startSimulation();
 
-      document.getElementById("meta").textContent = `Total Nodes: ${TOTAL_NODES} | Total Edges: ${TOTAL_EDGES}`;
+      if (!view.fullGraphMode) {
+        NET.startSimulation();
+      }
+
+      document.getElementById("meta").textContent = `Nodes: ${view.nodeCount} | Edges: ${view.edgeCount}`;
+    }
+
+    function populateNodeChoices() {
+      const list = document.getElementById("node-list");
+      const frag = document.createDocumentFragment();
+      for (const n of NODE_CHOICES.slice(0, 2000)) {
+        const opt = document.createElement("option");
+        opt.value = n;
+        frag.appendChild(opt);
+      }
+      list.appendChild(frag);
     }
 
     async function init() {
       const res = await fetch("./graph.json", { cache: "no-store" });
       if (!res.ok) throw new Error(`Cannot load graph.json (${res.status})`);
+
       const rows = await res.json();
-      const base = buildBase(rows);
-      BASE_NODE_MAP = base.nodeMap;
-      BASE_EDGES = base.edges;
-      TOTAL_NODES = BASE_NODE_MAP.size;
-      TOTAL_EDGES = BASE_EDGES.length;
+      const parsed = parseRows(Array.isArray(rows) ? rows : []);
+      BASE_NODES = parsed.nodes;
+      BASE_EDGES = parsed.edges;
+      GLOBAL_NODE_PAPER_COUNTS = parsed.globalNodePaperCounts;
+      NODE_CHOICES = parsed.nodeChoices;
 
-      const list = document.getElementById("node-list");
-      const frag = document.createDocumentFragment();
-      for (const n of [...BASE_NODE_MAP.values()].slice(0, 2000)) {
-        const a = document.createElement("option");
-        a.value = n.id;
-        frag.appendChild(a);
-      }
-      list.appendChild(frag);
-
+      populateNodeChoices();
       renderFromInputs();
     }
 
